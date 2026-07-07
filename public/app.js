@@ -1,14 +1,20 @@
 /*
  * Serverless planning poker over Supabase Realtime.
  *
- * - Presence carries only { id, name, spectator, hasVoted } — never the vote
- *   value, so cards stay genuinely hidden until a round is revealed.
- * - Broadcast events drive the shared round state:
- *     reveal        -> everyone flips; each voter then emits its value
- *     value         -> a voter's actual pick (only sent after reveal)
- *     reset         -> clear the round
- *     sync-request  -> a newcomer asks "is a round already revealed?"
- *     sync-state    -> peers answer (only when revealed) so late joiners catch up
+ * Presence is used ONLY for identity (who is in the room + their name), because
+ * presence *joins/leaves* propagate reliably but presence *updates* (re-track)
+ * do not. All mutable per-participant state — hasVoted, spectator — travels over
+ * Broadcast, which is reliable.
+ *
+ * Broadcast events:
+ *   state         { id, hasVoted, spectator }  a participant's mutable state
+ *   reveal                                      flip; each voter then emits value
+ *   value         { id, value }                 actual pick, only after reveal
+ *   reset                                        clear the round
+ *   sync-request  { from }                       newcomer asks peers to announce
+ *   sync-state    { revealed }                   peers tell newcomer a round is open
+ *
+ * Vote values are never sent before reveal, so cards stay genuinely hidden.
  */
 
 const DECK = ["0", "1", "2", "3", "5", "8", "13", "21", "34", "?", "☕"];
@@ -46,10 +52,15 @@ const client = configured
 // ---- Local state ----
 let channel = null;
 let myId = null;
-let me = { id: null, name: "", spectator: false, hasVoted: false };
-let myVote = null;
+let myName = "";
+let myVote = null; // my locally-held card value (never broadcast until reveal)
 let revealed = false;
+let states = {}; // id -> { hasVoted, spectator }
 let revealedVotes = {}; // id -> value, populated only after reveal
+
+function mySpectator() {
+  return !!(states[myId] && states[myId].spectator);
+}
 
 // ---- Restore name/room and auto-rejoin on refresh ----
 function prefill() {
@@ -82,9 +93,10 @@ function join(name, room) {
   history.replaceState({}, "", url);
 
   myId = crypto.randomUUID();
-  me = { id: myId, name, spectator: false, hasVoted: false };
-  revealed = false;
+  myName = name;
   myVote = null;
+  revealed = false;
+  states = { [myId]: { hasVoted: false, spectator: false } };
   revealedVotes = {};
 
   channel = client.channel(`room:${room}`, {
@@ -93,6 +105,7 @@ function join(name, room) {
 
   channel
     .on("presence", { event: "sync" }, render)
+    .on("broadcast", { event: "state" }, onState)
     .on("broadcast", { event: "reveal" }, onReveal)
     .on("broadcast", { event: "value" }, onValue)
     .on("broadcast", { event: "reset" }, onReset)
@@ -100,8 +113,8 @@ function join(name, room) {
     .on("broadcast", { event: "sync-state" }, onSyncState)
     .subscribe(async (status) => {
       if (status !== "SUBSCRIBED") return;
-      await channel.track(me);
-      // Ask existing peers whether a round is already revealed.
+      await channel.track({ id: myId, name: myName }); // identity only
+      broadcastMyState();
       send("sync-request", { from: myId });
       roomNameEl.textContent = room;
       loginEl.classList.add("hidden");
@@ -114,11 +127,24 @@ function send(event, payload = {}) {
   channel.send({ type: "broadcast", event, payload });
 }
 
+function broadcastMyState() {
+  send("state", {
+    id: myId,
+    hasVoted: myVote !== null && !mySpectator(),
+    spectator: mySpectator(),
+  });
+}
+
 // ---- Broadcast handlers ----
+function onState({ payload }) {
+  if (!payload || !payload.id) return;
+  states[payload.id] = { hasVoted: !!payload.hasVoted, spectator: !!payload.spectator };
+  render();
+}
+
 function onReveal() {
   revealed = true;
-  // Now (and only now) reveal my own pick to the room.
-  if (!me.spectator && myVote !== null) {
+  if (!mySpectator() && myVote !== null) {
     revealedVotes[myId] = myVote;
     send("value", { id: myId, value: myVote });
   }
@@ -136,17 +162,17 @@ function onReset() {
   revealed = false;
   myVote = null;
   revealedVotes = {};
-  me.hasVoted = false;
-  channel.track(me);
+  // Clear everyone's voted flag — a reset starts a fresh round for all.
+  for (const id of Object.keys(states)) states[id].hasVoted = false;
   render();
 }
 
 function onSyncRequest() {
-  // Only answer if a round is currently revealed — newcomers default to hidden.
-  if (!revealed) return;
-  send("sync-state", { revealed: true });
-  if (!me.spectator && myVote !== null) {
-    send("value", { id: myId, value: myVote });
+  // Announce my current state so newcomers see who has voted / who is spectating.
+  broadcastMyState();
+  if (revealed) {
+    send("sync-state", { revealed: true });
+    if (!mySpectator() && myVote !== null) send("value", { id: myId, value: myVote });
   }
 }
 
@@ -161,12 +187,14 @@ function onSyncState({ payload }) {
 revealBtn.addEventListener("click", () => send("reveal"));
 resetBtn.addEventListener("click", () => send("reset"));
 spectatorBtn.addEventListener("click", () => {
-  me.spectator = !me.spectator;
-  if (me.spectator) {
+  const now = !mySpectator();
+  states[myId] = states[myId] || { hasVoted: false, spectator: false };
+  states[myId].spectator = now;
+  if (now) {
     myVote = null;
-    me.hasVoted = false;
+    states[myId].hasVoted = false;
   }
-  channel.track(me);
+  broadcastMyState();
   render();
 });
 leaveBtn.addEventListener("click", () => {
@@ -176,28 +204,37 @@ leaveBtn.addEventListener("click", () => {
 });
 
 function vote(value) {
-  if (revealed || me.spectator) return;
+  if (revealed || mySpectator()) return;
   myVote = myVote === value ? null : value;
-  me.hasVoted = myVote !== null;
-  channel.track(me);
+  states[myId] = states[myId] || { hasVoted: false, spectator: false };
+  states[myId].hasVoted = myVote !== null;
+  broadcastMyState();
   render();
 }
 
 // ---- Render ----
 function participantList() {
   const state = channel ? channel.presenceState() : {};
+  // Presence gives identity (id, name); mutable flags come from `states`.
   return Object.values(state)
     .map((metas) => metas[0])
-    .filter(Boolean);
+    .filter(Boolean)
+    .map((p) => ({
+      id: p.id,
+      name: p.name,
+      hasVoted: !!(states[p.id] && states[p.id].hasVoted),
+      spectator: !!(states[p.id] && states[p.id].spectator),
+    }));
 }
 
 function render() {
   const people = participantList();
-  spectatorBtn.classList.toggle("active", me.spectator);
-  spectatorBtn.textContent = me.spectator ? "🎴 Join voting" : "👀 Spectate";
+  const spec = mySpectator();
+  spectatorBtn.classList.toggle("active", spec);
+  spectatorBtn.textContent = spec ? "🎴 Join voting" : "👀 Spectate";
 
   renderParticipants(people);
-  renderDeck();
+  renderDeck(spec);
   renderControls(people);
 }
 
@@ -240,10 +277,10 @@ function participantNode(p) {
   return el;
 }
 
-function renderDeck() {
+function renderDeck(spec) {
   deckEl.innerHTML = "";
-  deckEl.classList.toggle("hidden", me.spectator);
-  if (me.spectator) return;
+  deckEl.classList.toggle("hidden", spec);
+  if (spec) return;
 
   for (const value of DECK) {
     const btn = document.createElement("button");
