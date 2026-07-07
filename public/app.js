@@ -17,7 +17,7 @@
  * Vote values are never sent before reveal, so cards stay genuinely hidden.
  */
 
-const DECK = ["0", "1", "2", "3", "5", "8", "13", "21", "34", "?", "☕"];
+const DECK = ["0", "½", "1", "2", "3", "5", "8", "13", "20", "40", "100", "?", "☕"];
 const LOGO = "ritense-logo.svg";
 
 // ---- Elements ----
@@ -319,7 +319,9 @@ function renderResults() {
   }
   resultsEl.classList.remove("hidden");
 
-  const numeric = votes.filter((v) => /^\d+$/.test(v)).map(Number);
+  const numeric = votes
+    .filter((v) => v === "½" || /^\d+$/.test(v))
+    .map((v) => (v === "½" ? 0.5 : Number(v)));
   const average =
     numeric.length > 0
       ? Math.round((numeric.reduce((a, b) => a + b, 0) / numeric.length) * 10) / 10
