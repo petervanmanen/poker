@@ -57,6 +57,7 @@ let myVote = null; // my locally-held card value (never broadcast until reveal)
 let revealed = false;
 let states = {}; // id -> { hasVoted, spectator }
 let revealedVotes = {}; // id -> value, populated only after reveal
+let confettiShown = false; // fire the consensus easter egg once per round
 
 function mySpectator() {
   return !!(states[myId] && states[myId].spectator);
@@ -96,6 +97,7 @@ function join(name, room) {
   myName = name;
   myVote = null;
   revealed = false;
+  confettiShown = false;
   states = { [myId]: { hasVoted: false, spectator: false } };
   revealedVotes = {};
 
@@ -160,6 +162,7 @@ function onValue({ payload }) {
 
 function onReset() {
   revealed = false;
+  confettiShown = false;
   myVote = null;
   revealedVotes = {};
   // Clear everyone's voted flag — a reset starts a fresh round for all.
@@ -301,7 +304,7 @@ function renderControls(people) {
     statusEl.textContent = "Cards revealed";
     revealBtn.classList.add("hidden");
     resetBtn.classList.remove("hidden");
-    renderResults();
+    renderResults(people);
   } else {
     statusEl.textContent = `${votedCount} / ${voters.length} voted`;
     revealBtn.classList.remove("hidden");
@@ -311,7 +314,7 @@ function renderControls(people) {
   }
 }
 
-function renderResults() {
+function renderResults(people) {
   const votes = Object.values(revealedVotes);
   if (votes.length === 0) {
     resultsEl.classList.add("hidden");
@@ -332,7 +335,14 @@ function renderResults() {
   const distribution = Object.entries(counts)
     .map(([v, c]) => `${escapeHtml(v)}×${c}`)
     .join("  ");
-  const consensus = new Set(votes).size === 1 && votes.length > 1;
+
+  // Strict consensus: at least two voters, EVERY non-spectator has voted, and
+  // all their revealed cards are identical (and every value has actually
+  // arrived over the wire yet).
+  const voters = (people || []).filter((p) => !p.spectator);
+  const values = voters.map((p) => revealedVotes[p.id]);
+  const allIn = voters.length >= 2 && values.every((v) => v != null);
+  const consensus = allIn && new Set(values).size === 1;
 
   resultsEl.innerHTML = `
     <div class="result-stat">
@@ -344,6 +354,25 @@ function renderResults() {
       <div class="label">Distribution</div>
     </div>
     ${consensus ? '<div class="consensus-badge">🎉 Consensus!</div>' : ""}`;
+
+  // Easter egg: everyone agreed — rain confetti (once per round, on every client).
+  if (consensus && !confettiShown) {
+    confettiShown = true;
+    celebrate();
+  }
+}
+
+// Ritense-colored confetti burst.
+function celebrate() {
+  if (typeof confetti !== "function") return;
+  const colors = ["#003263", "#ed6d3c", "#0a4d8f", "#ffffff"];
+  confetti({ particleCount: 140, spread: 90, startVelocity: 45, origin: { y: 0.6 }, colors });
+  const end = Date.now() + 1500;
+  (function frame() {
+    confetti({ particleCount: 5, angle: 60, spread: 60, origin: { x: 0 }, colors });
+    confetti({ particleCount: 5, angle: 120, spread: 60, origin: { x: 1 }, colors });
+    if (Date.now() < end) requestAnimationFrame(frame);
+  })();
 }
 
 function escapeHtml(s) {
