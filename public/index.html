@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <!-- Login screen -->
+  <!-- Join screen (no auth — just a display name + session) -->
   <div id="login" class="login">
     <form id="login-form" class="login-card">
       <img src="ritense-logo.svg" alt="ritense" class="login-logo" />
@@ -23,6 +23,9 @@
         <input id="room-input" type="text" placeholder="e.g. sprint-42" maxlength="60" required />
       </label>
       <button type="submit">Join session</button>
+      <p id="config-warning" class="config-warning hidden">
+        ⚠️ Supabase is not configured yet — set your URL and anon key in <code>config.js</code>.
+      </p>
     </form>
   </div>
 
@@ -57,7 +60,8 @@
     </footer>
   </div>
 
-  <script src="/socket.io/socket.io.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="config.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

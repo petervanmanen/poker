@@ -1,15 +1,13 @@
 {
   "name": "ritense-planning-poker",
-  "version": "1.0.0",
-  "description": "Real-time planning poker with multiple users",
+  "version": "2.0.0",
+  "description": "Serverless real-time planning poker on Supabase Realtime",
   "type": "module",
-  "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "npx --yes serve public",
+    "deploy": "node --env-file=.env deploy.mjs"
   },
   "dependencies": {
-    "express": "^4.19.2",
-    "socket.io": "^4.7.5"
+    "@supabase/supabase-js": "^2.45.0"
   }
 }

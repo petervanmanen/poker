@@ -75,6 +75,17 @@ body {
   cursor: pointer;
 }
 .login-card button:hover { background: var(--orange); }
+.config-warning {
+  margin: 4px 0 0;
+  padding: 10px 12px;
+  background: #fff3ee;
+  border: 1px solid var(--orange);
+  border-radius: 8px;
+  color: #9c3d17;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.config-warning code { background: #ffe3d6; padding: 1px 5px; border-radius: 4px; }
 
 /* ---------- Session ---------- */
 .session { display: flex; flex-direction: column; min-height: 100vh; }

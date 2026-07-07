@@ -2,3 +2,6 @@ node_modules/
 npm-debug.log*
 .DS_Store
 .env
+
+# Local Supabase credentials — never commit these
+public/config.js
