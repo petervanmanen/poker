@@ -114,6 +114,7 @@ function join(name, room) {
     .on("broadcast", { event: "sync-request" }, onSyncRequest)
     .on("broadcast", { event: "sync-state" }, onSyncState)
     .on("broadcast", { event: "celebrate" }, fireCelebration)
+    .on("broadcast", { event: "hearts" }, onHearts)
     .subscribe(async (status) => {
       if (status !== "SUBSCRIBED") return;
       await channel.track({ id: myId, name: myName }); // identity only
@@ -187,6 +188,16 @@ function onSyncState({ payload }) {
   }
 }
 
+// Someone sent hearts. Show a fountain rising from the SENDER's card, as it
+// appears on this client's screen.
+function onHearts({ payload }) {
+  if (!payload || !payload.from) return;
+  const card = participantsEl.querySelector(
+    `.mini-card[data-id="${payload.from}"]`
+  );
+  if (card) heartsFountain(card);
+}
+
 // ---- Actions ----
 revealBtn.addEventListener("click", () => send("reveal"));
 resetBtn.addEventListener("click", () => send("reset"));
@@ -205,6 +216,16 @@ leaveBtn.addEventListener("click", () => {
   localStorage.removeItem("pp_room");
   if (channel) client.removeChannel(channel);
   location.href = location.pathname;
+});
+
+// Click another participant's card to shower them with hearts. Delegated on the
+// container (which persists across re-renders).
+participantsEl.addEventListener("click", (e) => {
+  const card = e.target.closest(".mini-card[data-id]");
+  if (!card || !channel) return;
+  const id = card.dataset.id;
+  if (!id || id === myId) return;
+  send("hearts", { from: myId, to: id });
 });
 
 function vote(value) {
@@ -256,7 +277,20 @@ function renderParticipants(people) {
       <div class="mini-card empty" style="font-size:22px">👀</div>
       <span class="name">${escapeHtml(p.name)}${p.id === myId ? " (you)" : ""}</span>
       <span class="badge">spectating</span>`;
+    tagSendable(el, p.id);
     participantsEl.appendChild(el);
+  }
+}
+
+// Mark a participant's card with its owner id; other people's cards are
+// clickable to send them hearts.
+function tagSendable(el, id) {
+  const card = el.querySelector(".mini-card");
+  if (!card) return;
+  card.dataset.id = id;
+  if (id !== myId) {
+    card.classList.add("sendable");
+    card.title = "Send hearts ❤️";
   }
 }
 
@@ -278,6 +312,7 @@ function participantNode(p) {
   el.innerHTML = `
     ${cardHtml}
     <span class="name">${escapeHtml(p.name)}${p.id === myId ? " (you)" : ""}</span>`;
+  tagSendable(el, p.id);
   return el;
 }
 
@@ -402,6 +437,60 @@ function ensureAudio() {
 ["click", "keydown", "touchstart"].forEach((ev) =>
   window.addEventListener(ev, ensureAudio, { passive: true })
 );
+
+// ---- Hearts fountain ----
+function heartsLayer() {
+  let layer = document.getElementById("hearts-layer");
+  if (!layer) {
+    layer = document.createElement("div");
+    layer.id = "hearts-layer";
+    document.body.appendChild(layer);
+  }
+  return layer;
+}
+
+function heartsFountain(el) {
+  const rect = el.getBoundingClientRect();
+  const originX = rect.left + rect.width / 2;
+  const originY = rect.top + rect.height / 2;
+  const layer = heartsLayer();
+  const emojis = ["❤️", "💖", "💕", "💗", "🧡"];
+  const count = 16;
+
+  for (let i = 0; i < count; i++) {
+    const heart = document.createElement("div");
+    heart.className = "heart";
+    heart.textContent = emojis[i % emojis.length];
+    heart.style.left = originX + "px";
+    heart.style.top = originY + "px";
+    heart.style.fontSize = 16 + Math.random() * 18 + "px";
+    layer.appendChild(heart);
+
+    const dx = (Math.random() - 0.5) * 170; // horizontal spread
+    const rise = 170 + Math.random() * 140; // how high it floats
+    const anim = heart.animate(
+      [
+        { transform: "translate(-50%, -50%) scale(0.4)", opacity: 0 },
+        {
+          transform: `translate(calc(-50% + ${dx * 0.4}px), calc(-50% - ${rise * 0.4}px)) scale(1)`,
+          opacity: 1,
+          offset: 0.25,
+        },
+        {
+          transform: `translate(calc(-50% + ${dx}px), calc(-50% - ${rise}px)) scale(0.9)`,
+          opacity: 0,
+        },
+      ],
+      {
+        duration: 1300 + Math.random() * 800,
+        delay: Math.random() * 260,
+        easing: "cubic-bezier(.2,.6,.3,1)",
+        fill: "forwards",
+      }
+    );
+    anim.onfinish = () => heart.remove();
+  }
+}
 
 function playTada() {
   const ctx = ensureAudio();

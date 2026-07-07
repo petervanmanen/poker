@@ -152,6 +152,24 @@ button.ghost.active { border-color: var(--orange); color: var(--orange); }
   background: #fff;
 }
 .mini-card.empty { background: #f2f5f8; border: 2px dashed var(--line); box-shadow: none; }
+/* Other people's cards can be clicked to send hearts */
+.mini-card.sendable { cursor: pointer; }
+.mini-card.sendable:hover { transform: translateY(-3px) scale(1.04); }
+
+/* Hearts fountain overlay */
+#hearts-layer {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 9999;
+}
+#hearts-layer .heart {
+  position: absolute;
+  will-change: transform, opacity;
+  user-select: none;
+  filter: drop-shadow(0 2px 3px rgba(0, 50, 99, 0.25));
+}
 /* Face-down card: light navy tint so the navy Ritense logo stays legible */
 .mini-card.voted {
   background: linear-gradient(135deg, #eaf0f6, #dfe8f1);
