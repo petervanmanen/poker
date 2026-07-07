@@ -188,10 +188,11 @@ function onSyncState({ payload }) {
   }
 }
 
-// Someone sent hearts. Show a fountain rising from the SENDER's card, as it
-// appears on this client's screen.
+// Someone sent hearts. Only the intended receiver sees them — a fountain rising
+// from the SENDER's card as it appears on the receiver's screen.
 function onHearts({ payload }) {
   if (!payload || !payload.from) return;
+  if (payload.to !== myId) return; // private: receiver only
   const card = participantsEl.querySelector(
     `.mini-card[data-id="${payload.from}"]`
   );
