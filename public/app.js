@@ -113,6 +113,7 @@ function join(name, room) {
     .on("broadcast", { event: "reset" }, onReset)
     .on("broadcast", { event: "sync-request" }, onSyncRequest)
     .on("broadcast", { event: "sync-state" }, onSyncState)
+    .on("broadcast", { event: "celebrate" }, fireCelebration)
     .subscribe(async (status) => {
       if (status !== "SUBSCRIBED") return;
       await channel.track({ id: myId, name: myName }); // identity only
@@ -355,15 +356,25 @@ function renderResults(people) {
     </div>
     ${consensus ? '<div class="consensus-badge">🎉 Consensus!</div>' : ""}`;
 
-  // Easter egg: everyone agreed — rain confetti (once per round, on every client).
+  // Easter egg: everyone agreed. Fire locally AND tell every peer to fire, so
+  // it isn't left to each client's own (timing-sensitive) detection.
   if (consensus && !confettiShown) {
-    confettiShown = true;
-    celebrate();
+    fireCelebration();
+    send("celebrate");
   }
 }
 
+// Celebrate once per round: confetti + a little "tada". Guarded so repeated
+// triggers (local detection + the broadcast echo) only fire it a single time.
+function fireCelebration() {
+  if (confettiShown) return;
+  confettiShown = true;
+  burstConfetti();
+  playTada();
+}
+
 // Ritense-colored confetti burst.
-function celebrate() {
+function burstConfetti() {
   if (typeof confetti !== "function") return;
   const colors = ["#003263", "#ed6d3c", "#0a4d8f", "#ffffff"];
   confetti({ particleCount: 140, spread: 90, startVelocity: 45, origin: { y: 0.6 }, colors });
@@ -373,6 +384,51 @@ function celebrate() {
     confetti({ particleCount: 5, angle: 120, spread: 60, origin: { x: 1 }, colors });
     if (Date.now() < end) requestAnimationFrame(frame);
   })();
+}
+
+// ---- Audio: a synthesized "ta-da" fanfare (no external file needed) ----
+let audioCtx = null;
+function ensureAudio() {
+  if (!audioCtx) {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    audioCtx = new AC();
+  }
+  if (audioCtx.state === "suspended") audioCtx.resume();
+  return audioCtx;
+}
+// Browsers only allow audio after a user gesture — unlock the context on the
+// first interaction so the tada can play later (even when triggered by a peer).
+["click", "keydown", "touchstart"].forEach((ev) =>
+  window.addEventListener(ev, ensureAudio, { passive: true })
+);
+
+function playTada() {
+  const ctx = ensureAudio();
+  if (!ctx) return;
+  const now = ctx.currentTime;
+  // A short "ta" pickup, then a bright major chord "da".
+  const notes = [
+    { f: 523.25, t: 0.0, d: 0.14 }, // C5
+    { f: 523.25, t: 0.16, d: 0.55 }, // C5
+    { f: 659.25, t: 0.16, d: 0.55 }, // E5
+    { f: 783.99, t: 0.16, d: 0.55 }, // G5
+    { f: 1046.5, t: 0.16, d: 0.55 }, // C6
+  ];
+  for (const n of notes) {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "triangle";
+    osc.frequency.value = n.f;
+    const start = now + n.t;
+    gain.gain.setValueAtTime(0.0001, start);
+    gain.gain.exponentialRampToValueAtTime(0.22, start + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, start + n.d);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(start);
+    osc.stop(start + n.d + 0.05);
+  }
 }
 
 function escapeHtml(s) {
