@@ -1,0 +1,207 @@
+:root {
+  /* Ritense brand palette (from ritenselogovector.svg) */
+  --navy: #003263;
+  --navy-2: #0a4d8f; /* lighter navy for gradients */
+  --orange: #ed6d3c;
+  --ink: #003263;
+  --bg: #eef2f6;
+  --card-bg: #ffffff;
+  --muted: #6b7c8c;
+  --line: #d6e0e8;
+  --shadow: 0 6px 20px rgba(0, 50, 99, 0.14);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: "Segoe UI", Helvetica, Arial, sans-serif;
+  background: var(--bg);
+  color: var(--ink);
+  min-height: 100vh;
+}
+
+.hidden { display: none !important; }
+
+/* ---------- Login ---------- */
+.login {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #e6edf4, #f3e7e0);
+  padding: 20px;
+}
+.login-card {
+  background: var(--card-bg);
+  padding: 40px;
+  border-radius: 20px;
+  box-shadow: var(--shadow);
+  width: 100%;
+  max-width: 380px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.login-logo { width: 190px; margin: 0 auto 6px; }
+.login-card h1 { margin: 0; font-size: 26px; color: var(--navy); }
+.subtitle { margin: 0 0 8px; color: var(--muted); }
+.login-card label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.login-card input {
+  padding: 12px 14px;
+  border: 2px solid var(--line);
+  border-radius: 10px;
+  font-size: 15px;
+  outline: none;
+  transition: border-color .15s;
+}
+.login-card input:focus { border-color: var(--orange); }
+.login-card button {
+  margin-top: 8px;
+  padding: 13px;
+  border: none;
+  border-radius: 10px;
+  background: linear-gradient(135deg, var(--navy), var(--navy-2));
+  color: #fff;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.login-card button:hover { background: var(--orange); }
+
+/* ---------- Session ---------- */
+.session { display: flex; flex-direction: column; min-height: 100vh; }
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 24px;
+  background: #fff;
+  border-bottom: 3px solid var(--orange);
+  box-shadow: 0 2px 8px rgba(0,50,99,.08);
+}
+.topbar-logo { height: 30px; }
+.room-info { display: flex; flex-direction: column; line-height: 1.1; }
+.room-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.room-name { font-size: 16px; font-weight: 700; color: var(--navy); }
+.topbar-actions { margin-left: auto; display: flex; gap: 8px; }
+
+button.ghost {
+  background: transparent;
+  border: 2px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--ink);
+}
+button.ghost:hover { border-color: var(--orange); }
+button.ghost.active { border-color: var(--orange); color: var(--orange); }
+
+.table-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 30px;
+  padding: 40px 20px;
+}
+.participants {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 22px;
+  justify-content: center;
+  max-width: 900px;
+}
+
+.participant { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.participant .name { font-size: 14px; font-weight: 600; max-width: 110px; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.participant .badge { font-size: 11px; color: var(--muted); }
+
+/* Player mini-card */
+.mini-card {
+  width: 62px;
+  height: 88px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 26px;
+  font-weight: 800;
+  color: var(--navy);
+  box-shadow: var(--shadow);
+  transition: transform .3s, background .2s;
+  background: #fff;
+}
+.mini-card.empty { background: #f2f5f8; border: 2px dashed var(--line); box-shadow: none; }
+/* Face-down card: light navy tint so the navy Ritense logo stays legible */
+.mini-card.voted {
+  background: linear-gradient(135deg, #eaf0f6, #dfe8f1);
+  border: 2px solid var(--navy);
+}
+.mini-card.voted .back-logo { width: 46px; }
+.mini-card.revealed { color: var(--navy); background: #fff; border: 2px solid var(--orange); }
+
+.center-controls { display: flex; flex-direction: column; align-items: center; gap: 14px; min-height: 80px; }
+.status { color: var(--muted); font-weight: 600; }
+
+button.primary, button.secondary {
+  padding: 12px 28px;
+  border-radius: 10px;
+  border: none;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+}
+button.primary { background: linear-gradient(135deg, var(--navy), var(--navy-2)); color: #fff; }
+button.primary:hover:not(:disabled) { background: var(--orange); }
+button.primary:disabled { opacity: .5; cursor: not-allowed; }
+button.secondary { background: #fff; border: 2px solid var(--orange); color: var(--orange); }
+button.secondary:hover { background: var(--orange); color: #fff; }
+
+.results { display: flex; gap: 26px; align-items: center; flex-wrap: wrap; justify-content: center; }
+.result-stat { text-align: center; }
+.result-stat .value { font-size: 30px; font-weight: 800; color: var(--navy); }
+.result-stat .label { font-size: 12px; color: var(--muted); text-transform: uppercase; }
+.consensus-badge { background: var(--orange); color: #fff; padding: 6px 14px; border-radius: 20px; font-weight: 700; }
+
+/* ---------- Deck ---------- */
+.deck-area {
+  padding: 20px 20px 32px;
+  background: #fff;
+  box-shadow: 0 -2px 12px rgba(0,50,99,.08);
+}
+.deck-hint { text-align: center; margin: 0 0 14px; color: var(--muted); font-weight: 600; }
+.deck { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; }
+.card {
+  width: 58px;
+  height: 84px;
+  border-radius: 10px;
+  border: 2px solid var(--line);
+  background: #fff;
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--navy);
+  cursor: pointer;
+  transition: transform .12s, border-color .12s, background .12s;
+}
+.card:hover { transform: translateY(-8px); border-color: var(--orange); }
+.card.selected {
+  transform: translateY(-12px);
+  background: linear-gradient(135deg, var(--navy), var(--navy-2));
+  color: #fff;
+  border-color: var(--orange);
+}
+.card:disabled { opacity: .4; cursor: not-allowed; transform: none; }
+
+@media (max-width: 520px) {
+  .login-card { padding: 28px; }
+  .topbar { padding: 10px 14px; }
+}

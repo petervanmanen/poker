@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ritense Planning Poker</title>
+  <link rel="icon" href="ritense-logo.svg" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- Login screen -->
+  <div id="login" class="login">
+    <form id="login-form" class="login-card">
+      <img src="ritense-logo.svg" alt="ritense" class="login-logo" />
+      <h1>Planning Poker</h1>
+      <p class="subtitle">Estimate together, in real time.</p>
+      <label>
+        Your name
+        <input id="name-input" type="text" placeholder="e.g. Peter" maxlength="40" autocomplete="name" required />
+      </label>
+      <label>
+        Session / room
+        <input id="room-input" type="text" placeholder="e.g. sprint-42" maxlength="60" required />
+      </label>
+      <button type="submit">Join session</button>
+    </form>
+  </div>
+
+  <!-- Session screen -->
+  <div id="session" class="session hidden">
+    <header class="topbar">
+      <img src="ritense-logo.svg" alt="ritense" class="topbar-logo" />
+      <div class="room-info">
+        <span class="room-label">Session</span>
+        <span id="room-name" class="room-name"></span>
+      </div>
+      <div class="topbar-actions">
+        <button id="spectator-btn" class="ghost">👀 Spectate</button>
+        <button id="leave-btn" class="ghost">Leave</button>
+      </div>
+    </header>
+
+    <main class="table-area">
+      <div id="participants" class="participants"></div>
+
+      <div class="center-controls">
+        <div id="status" class="status"></div>
+        <button id="reveal-btn" class="primary">Reveal cards</button>
+        <button id="reset-btn" class="secondary hidden">New round</button>
+        <div id="results" class="results hidden"></div>
+      </div>
+    </main>
+
+    <footer class="deck-area">
+      <p class="deck-hint">Pick your card</p>
+      <div id="deck" class="deck"></div>
+    </footer>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
