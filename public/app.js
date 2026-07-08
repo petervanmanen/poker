@@ -72,6 +72,7 @@ let session = null; // shared session state (see header)
 let states = {}; // id -> { hasVoted, spectator }
 let revealedVotes = {}; // id -> value, only after reveal
 let confettiShown = false;
+let stormShown = false; // lightning easter egg, once per round
 let timeoutTimer = null;
 
 function tabClientId() {
@@ -130,6 +131,7 @@ function join(name, room) {
   states = { [myId]: { hasVoted: false, spectator: false } };
   revealedVotes = {};
   confettiShown = false;
+  stormShown = false;
 
   channel = client.channel(`room:${room}`, {
     config: { broadcast: { self: true }, presence: { key: myId } },
@@ -147,6 +149,7 @@ function join(name, room) {
     .on("broadcast", { event: "value" }, onValue)
     .on("broadcast", { event: "sync-request" }, onSyncRequest)
     .on("broadcast", { event: "celebrate" }, fireCelebration)
+    .on("broadcast", { event: "storm" }, fireStorm)
     .on("broadcast", { event: "hearts" }, onHearts)
     .subscribe(async (status) => {
       if (status !== "SUBSCRIBED") return;
@@ -214,6 +217,7 @@ function clearRound() {
   myVote = null;
   revealedVotes = {};
   confettiShown = false;
+  stormShown = false;
   for (const id of Object.keys(states)) states[id].hasVoted = false;
 }
 
@@ -634,8 +638,11 @@ function renderResults(people) {
 
   const voters = (people || []).filter((p) => !p.spectator);
   const values = voters.map((p) => revealedVotes[p.id]);
-  const allIn = voters.length >= 2 && values.every((v) => v != null);
-  const consensus = allIn && new Set(values).size === 1;
+  const everyoneVoted = values.length > 0 && values.every((v) => v != null);
+  const consensus = everyoneVoted && voters.length >= 2 && new Set(values).size === 1;
+  // Total disagreement: 3+ voters and everyone picked a different card.
+  const allDifferent =
+    everyoneVoted && voters.length >= 3 && new Set(values).size === voters.length;
 
   resultsEl.innerHTML = `
     <div class="result-stat">
@@ -651,6 +658,10 @@ function renderResults(people) {
   if (consensus && !confettiShown) {
     fireCelebration();
     send("celebrate");
+  }
+  if (allDifferent && !stormShown) {
+    fireStorm();
+    send("storm");
   }
 }
 
@@ -744,6 +755,130 @@ function playTada() {
     osc.start(start);
     osc.stop(start + n.d + 0.05);
   }
+}
+
+// ---- Thunderstorm (everyone disagreed) ----
+function fireStorm() {
+  if (stormShown) return;
+  stormShown = true;
+  storm();
+  playThunder();
+}
+
+function storm() {
+  const layer = document.createElement("div");
+  layer.className = "storm";
+  document.body.appendChild(layer);
+
+  const DURATION = 3000;
+  const end = Date.now() + DURATION;
+  (function strike() {
+    if (Date.now() >= end) return;
+    // A brief full-screen flash.
+    const flash = document.createElement("div");
+    flash.className = "storm-flash";
+    layer.appendChild(flash);
+    flash
+      .animate([{ opacity: 0.85 }, { opacity: 0 }], {
+        duration: 120 + Math.random() * 180,
+        easing: "ease-out",
+        fill: "forwards",
+      })
+      .addEventListener("finish", () => flash.remove());
+    // One or two jagged bolts.
+    const n = 1 + Math.floor(Math.random() * 2);
+    for (let i = 0; i < n; i++) {
+      const bolt = makeBolt();
+      layer.appendChild(bolt);
+      bolt
+        .animate([{ opacity: 1 }, { opacity: 0.5, offset: 0.4 }, { opacity: 0 }], {
+          duration: 220 + Math.random() * 260,
+          fill: "forwards",
+        })
+        .addEventListener("finish", () => bolt.remove());
+    }
+    setTimeout(strike, 140 + Math.random() * 440);
+  })();
+
+  setTimeout(() => {
+    layer
+      .animate([{ opacity: 1 }, { opacity: 0 }], { duration: 450, fill: "forwards" })
+      .addEventListener("finish", () => layer.remove());
+  }, DURATION);
+}
+
+// A jagged lightning bolt as a full-screen SVG (viewBox is percentage space).
+function makeBolt() {
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", "0 0 100 100");
+  svg.setAttribute("preserveAspectRatio", "none");
+  svg.setAttribute("class", "bolt");
+
+  let x = 12 + Math.random() * 76;
+  let y = 0;
+  const pts = [[x, 0]];
+  while (y < 100) {
+    y += 8 + Math.random() * 12;
+    x += (Math.random() - 0.5) * 18;
+    x = Math.max(3, Math.min(97, x));
+    pts.push([Math.round(x * 10) / 10, Math.min(100, Math.round(y * 10) / 10)]);
+  }
+  const poly = document.createElementNS(NS, "polyline");
+  poly.setAttribute("points", pts.map((p) => p.join(",")).join(" "));
+  poly.setAttribute("fill", "none");
+  poly.setAttribute("stroke", "#eaf6ff");
+  poly.setAttribute("stroke-width", "3");
+  poly.setAttribute("vector-effect", "non-scaling-stroke");
+  poly.setAttribute("stroke-linejoin", "round");
+  poly.setAttribute("stroke-linecap", "round");
+  svg.appendChild(poly);
+  return svg;
+}
+
+// A rumbling thunder clap: filtered noise burst + low sweep.
+function playThunder() {
+  const ctx = ensureAudio();
+  if (!ctx) return;
+  const now = ctx.currentTime;
+  const dur = 2.6;
+
+  // Noise buffer for the rumble.
+  const frames = Math.floor(ctx.sampleRate * dur);
+  const buffer = ctx.createBuffer(1, frames, ctx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < frames; i++) data[i] = Math.random() * 2 - 1;
+
+  const noise = ctx.createBufferSource();
+  noise.buffer = buffer;
+  const lp = ctx.createBiquadFilter();
+  lp.type = "lowpass";
+  lp.frequency.setValueAtTime(500, now);
+  lp.frequency.exponentialRampToValueAtTime(90, now + dur);
+  const ng = ctx.createGain();
+  ng.gain.setValueAtTime(0.0001, now);
+  ng.gain.exponentialRampToValueAtTime(0.6, now + 0.08);
+  ng.gain.exponentialRampToValueAtTime(0.25, now + 0.6);
+  ng.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+  noise.connect(lp);
+  lp.connect(ng);
+  ng.connect(ctx.destination);
+  noise.start(now);
+  noise.stop(now + dur);
+
+  // A low sub sweep for the "boom".
+  const osc = ctx.createOscillator();
+  osc.type = "sine";
+  osc.frequency.setValueAtTime(80, now);
+  osc.frequency.exponentialRampToValueAtTime(35, now + 1.2);
+  const og = ctx.createGain();
+  og.gain.setValueAtTime(0.0001, now);
+  og.gain.exponentialRampToValueAtTime(0.5, now + 0.06);
+  og.gain.exponentialRampToValueAtTime(0.0001, now + 1.4);
+  osc.connect(og);
+  og.connect(ctx.destination);
+  osc.start(now);
+  osc.stop(now + 1.5);
 }
 
 // ---- Hearts (private to the receiver) ----

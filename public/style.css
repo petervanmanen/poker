@@ -272,6 +272,24 @@ button.ghost.active { border-color: var(--orange); color: var(--orange); }
   user-select: none;
   filter: drop-shadow(0 2px 3px rgba(0, 50, 99, 0.25));
 }
+
+/* Thunderstorm (everyone disagreed) */
+.storm {
+  position: fixed;
+  inset: 0;
+  background: rgba(3, 7, 18, 0.92);
+  z-index: 9998;
+  pointer-events: none;
+  overflow: hidden;
+}
+.storm-flash { position: absolute; inset: 0; background: rgba(200, 225, 255, 0.9); }
+.storm .bolt {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  filter: drop-shadow(0 0 6px #8fdcff) drop-shadow(0 0 14px #4aa8ff);
+}
 /* Face-down card: light navy tint so the navy Ritense logo stays legible */
 .mini-card.voted {
   background: linear-gradient(135deg, #eaf0f6, #dfe8f1);
