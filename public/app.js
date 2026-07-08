@@ -2,8 +2,9 @@
  * Serverless planning poker over Supabase Realtime — now with facilitated
  * SESSIONS (Option B: no database, peer-held state synced over Realtime).
  *
- * Identity: a stable per-browser id in localStorage (so a refresh/return keeps
- * you as the same participant — and keeps the facilitator the facilitator).
+ * Identity: a per-tab id in sessionStorage. It survives a refresh (so you keep
+ * your place / the facilitator role mid-session), but is forgotten when the tab
+ * closes — so a user returning after a session has ended is treated as new.
  *
  * Session state (held by the connected clients, synced via broadcast):
  *   session = {
@@ -65,11 +66,11 @@ let revealedVotes = {}; // id -> value, only after reveal
 let confettiShown = false;
 let timeoutTimer = null;
 
-function stableClientId() {
-  let id = localStorage.getItem("pp_client_id");
+function tabClientId() {
+  let id = sessionStorage.getItem("pp_client_id");
   if (!id) {
     id = crypto.randomUUID();
-    localStorage.setItem("pp_client_id", id);
+    sessionStorage.setItem("pp_client_id", id);
   }
   return id;
 }
@@ -114,7 +115,7 @@ function join(name, room) {
   url.searchParams.set("room", room);
   history.replaceState({}, "", url);
 
-  myId = stableClientId();
+  myId = tabClientId();
   myName = name;
   myVote = null;
   session = null;
