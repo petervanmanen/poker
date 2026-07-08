@@ -290,6 +290,34 @@ button.ghost.active { border-color: var(--orange); color: var(--orange); }
   height: 100%;
   filter: drop-shadow(0 0 6px #8fdcff) drop-shadow(0 0 14px #4aa8ff);
 }
+
+/* Hot take: spotlight on the lone dissenter */
+.hottake { position: fixed; inset: 0; z-index: 9998; pointer-events: none; }
+.hottake-caption {
+  position: absolute;
+  left: 50%;
+  top: 10%;
+  transform: translateX(-50%);
+  max-width: 90vw;
+  text-align: center;
+  background: rgba(255, 255, 255, 0.96);
+  color: var(--navy);
+  padding: 12px 22px;
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: 18px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+}
+.mini-card.spotlit {
+  position: relative;
+  z-index: 2;
+  box-shadow: 0 0 0 3px var(--orange), 0 0 34px 8px rgba(237, 109, 60, 0.85);
+  animation: spotpulse 0.7s ease-in-out infinite alternate;
+}
+@keyframes spotpulse {
+  from { transform: scale(1); }
+  to { transform: scale(1.12); }
+}
 /* Face-down card: light navy tint so the navy Ritense logo stays legible */
 .mini-card.voted {
   background: linear-gradient(135deg, #eaf0f6, #dfe8f1);

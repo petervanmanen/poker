@@ -51,6 +51,7 @@ const resultsEl = document.getElementById("results");
 const historyListEl = document.getElementById("history-list");
 const spectatorBtn = document.getElementById("spectator-btn");
 const leaveBtn = document.getElementById("leave-btn");
+const effectsBtn = document.getElementById("effects-btn");
 
 // ---- Supabase client ----
 const configured =
@@ -73,7 +74,12 @@ let states = {}; // id -> { hasVoted, spectator }
 let revealedVotes = {}; // id -> value, only after reveal
 let confettiShown = false;
 let stormShown = false; // lightning easter egg, once per round
+let hotTakeShown = false; // lone-dissenter spotlight, once per round
 let timeoutTimer = null;
+
+function effectsOn() {
+  return !session || session.effects !== false;
+}
 
 function tabClientId() {
   let id = sessionStorage.getItem("pp_client_id");
@@ -132,6 +138,7 @@ function join(name, room) {
   revealedVotes = {};
   confettiShown = false;
   stormShown = false;
+  hotTakeShown = false;
 
   channel = client.channel(`room:${room}`, {
     config: { broadcast: { self: true }, presence: { key: myId } },
@@ -142,6 +149,7 @@ function join(name, room) {
     .on("broadcast", { event: "session-state" }, onSessionState)
     .on("broadcast", { event: "state" }, onState)
     .on("broadcast", { event: "deck-set" }, onDeckSet)
+    .on("broadcast", { event: "effects-set" }, onEffectsSet)
     .on("broadcast", { event: "item-start" }, onItemStart)
     .on("broadcast", { event: "reveal" }, onReveal)
     .on("broadcast", { event: "reset" }, onReset)
@@ -150,6 +158,7 @@ function join(name, room) {
     .on("broadcast", { event: "sync-request" }, onSyncRequest)
     .on("broadcast", { event: "celebrate" }, fireCelebration)
     .on("broadcast", { event: "storm" }, fireStorm)
+    .on("broadcast", { event: "hottake" }, onHotTake)
     .on("broadcast", { event: "hearts" }, onHearts)
     .subscribe(async (status) => {
       if (status !== "SUBSCRIBED") return;
@@ -197,6 +206,7 @@ function newSession(facilitatorId) {
     id: crypto.randomUUID(),
     facilitatorId,
     deck: "fib",
+    effects: true,
     item: null,
     history: [],
     lastVoteAt: Date.now(),
@@ -218,6 +228,7 @@ function clearRound() {
   revealedVotes = {};
   confettiShown = false;
   stormShown = false;
+  hotTakeShown = false;
   for (const id of Object.keys(states)) states[id].hasVoted = false;
 }
 
@@ -256,6 +267,17 @@ function onDeckSet({ payload }) {
   if (!session || !payload || !DECKS[payload.deck]) return;
   session.deck = payload.deck;
   render();
+}
+
+// ---- Special-effects toggle ----
+function onEffectsSet({ payload }) {
+  if (!session || !payload) return;
+  session.effects = !!payload.on;
+  render();
+}
+function toggleEffects() {
+  if (!isFacilitator()) return;
+  send("effects-set", { on: !effectsOn() });
 }
 
 // ---- Item / round events ----
@@ -374,11 +396,12 @@ leaveBtn.addEventListener("click", () => {
   if (channel) client.removeChannel(channel);
   location.href = location.pathname;
 });
+effectsBtn.addEventListener("click", toggleEffects);
 
 // Click another participant's card to (privately) shower them with hearts.
 participantsEl.addEventListener("click", (e) => {
   const card = e.target.closest(".mini-card[data-id]");
-  if (!card || !channel) return;
+  if (!card || !channel || !effectsOn()) return;
   const id = card.dataset.id;
   if (!id || id === myId) return;
   send("hearts", { from: myId, to: id });
@@ -403,6 +426,12 @@ function render() {
   const spec = mySpectator();
   spectatorBtn.classList.toggle("active", spec);
   spectatorBtn.textContent = spec ? "🎴 Join voting" : "👀 Spectate";
+
+  // Effects toggle: facilitator only.
+  const on = effectsOn();
+  effectsBtn.classList.toggle("hidden", !isFacilitator());
+  effectsBtn.classList.toggle("active", on);
+  effectsBtn.textContent = on ? "✨ Effects: on" : "✨ Effects: off";
 
   renderItemBar(people);
   renderParticipants(people);
@@ -644,6 +673,23 @@ function renderResults(people) {
   const allDifferent =
     everyoneVoted && voters.length >= 2 && new Set(values).size === voters.length;
 
+  // Hot take: everyone agreed except exactly one lone dissenter (3+ voters).
+  let hotTake = false;
+  let dissenterId = null;
+  if (everyoneVoted && voters.length >= 3 && new Set(values).size === 2) {
+    const byVal = {};
+    for (const p of voters) {
+      const v = revealedVotes[p.id];
+      (byVal[v] = byVal[v] || []).push(p.id);
+    }
+    const loner = Object.values(byVal).find((ids) => ids.length === 1);
+    const majority = Object.values(byVal).find((ids) => ids.length === voters.length - 1);
+    if (loner && majority) {
+      hotTake = true;
+      dissenterId = loner[0];
+    }
+  }
+
   resultsEl.innerHTML = `
     <div class="result-stat">
       <div class="value">${average === null ? "–" : average}</div>
@@ -655,13 +701,17 @@ function renderResults(people) {
     </div>
     ${consensus ? '<div class="consensus-badge">🎉 Consensus!</div>' : ""}`;
 
-  if (consensus && !confettiShown) {
-    fireCelebration();
-    send("celebrate");
-  }
-  if (allDifferent && !stormShown) {
-    fireStorm();
-    send("storm");
+  if (effectsOn()) {
+    if (consensus && !confettiShown) {
+      fireCelebration();
+      send("celebrate");
+    } else if (allDifferent && !stormShown) {
+      fireStorm();
+      send("storm");
+    } else if (hotTake && !hotTakeShown) {
+      fireHotTake(dissenterId);
+      send("hottake", { id: dissenterId });
+    }
   }
 }
 
@@ -700,7 +750,7 @@ function renderHistory() {
 
 // ---- Celebration (confetti + tada) ----
 function fireCelebration() {
-  if (confettiShown) return;
+  if (!effectsOn() || confettiShown) return;
   confettiShown = true;
   burstConfetti();
   playTada();
@@ -759,7 +809,7 @@ function playTada() {
 
 // ---- Thunderstorm (everyone disagreed) ----
 function fireStorm() {
-  if (stormShown) return;
+  if (!effectsOn() || stormShown) return;
   stormShown = true;
   storm();
   playThunder();
@@ -881,9 +931,99 @@ function playThunder() {
   osc.stop(now + 1.5);
 }
 
+// ---- Hot take (everyone agreed except one) ----
+function onHotTake({ payload }) {
+  if (payload && payload.id) fireHotTake(payload.id);
+}
+function fireHotTake(id) {
+  if (!effectsOn() || hotTakeShown) return;
+  hotTakeShown = true;
+  hotTakeEffect(id);
+  playSting();
+}
+function hotTakeEffect(id) {
+  const card = participantsEl.querySelector(`.mini-card[data-id="${id}"]`);
+  const person = participantList().find((p) => p.id === id);
+  const name = person ? cleanText(person.name) : "Someone";
+
+  const layer = document.createElement("div");
+  layer.className = "hottake";
+  document.body.appendChild(layer);
+
+  let cx = window.innerWidth / 2;
+  let cy = window.innerHeight / 2;
+  if (card) {
+    const r = card.getBoundingClientRect();
+    cx = r.left + r.width / 2;
+    cy = r.top + r.height / 2;
+    card.classList.add("spotlit");
+  }
+  // A spotlight: dark everywhere except a clear circle over the dissenter's card.
+  layer.style.background = `radial-gradient(circle 150px at ${cx}px ${cy}px, rgba(0,0,0,0) 0%, rgba(0,0,0,0.15) 42%, rgba(3,7,18,0.82) 76%)`;
+
+  const cap = document.createElement("div");
+  cap.className = "hottake-caption";
+  cap.innerHTML = `🎤 Hot take! <strong>${escapeHtml(name)}</strong>, defend your estimate 🌶️`;
+  layer.appendChild(cap);
+
+  layer.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 250, fill: "backwards" });
+  setTimeout(() => {
+    layer
+      .animate([{ opacity: 1 }, { opacity: 0 }], { duration: 500, fill: "forwards" })
+      .addEventListener("finish", () => {
+        layer.remove();
+        if (card) card.classList.remove("spotlit");
+      });
+  }, 3000);
+}
+
+// A comedic "ba-dum-tss".
+function playSting() {
+  const ctx = ensureAudio();
+  if (!ctx) return;
+  const now = ctx.currentTime;
+  const tom = (t, f) => {
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.type = "sine";
+    o.frequency.setValueAtTime(f, now + t);
+    o.frequency.exponentialRampToValueAtTime(f * 0.6, now + t + 0.18);
+    g.gain.setValueAtTime(0.0001, now + t);
+    g.gain.exponentialRampToValueAtTime(0.4, now + t + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + t + 0.22);
+    o.connect(g);
+    g.connect(ctx.destination);
+    o.start(now + t);
+    o.stop(now + t + 0.25);
+  };
+  tom(0, 180); // ba
+  tom(0.18, 150); // dum
+  // tss (cymbal): high-passed noise burst
+  const dur = 0.5;
+  const frames = Math.floor(ctx.sampleRate * dur);
+  const buffer = ctx.createBuffer(1, frames, ctx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < frames; i++) data[i] = Math.random() * 2 - 1;
+  const noise = ctx.createBufferSource();
+  noise.buffer = buffer;
+  const hp = ctx.createBiquadFilter();
+  hp.type = "highpass";
+  hp.frequency.value = 6000;
+  const g = ctx.createGain();
+  const t = 0.36;
+  g.gain.setValueAtTime(0.0001, now + t);
+  g.gain.exponentialRampToValueAtTime(0.25, now + t + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, now + t + 0.4);
+  noise.connect(hp);
+  hp.connect(g);
+  g.connect(ctx.destination);
+  noise.start(now + t);
+  noise.stop(now + t + dur);
+}
+
 // ---- Hearts (private to the receiver) ----
 function onHearts({ payload }) {
-  if (!payload || !payload.from) return;
+  if (!effectsOn() || !payload || !payload.from) return;
   if (payload.to !== myId) return;
   const card = participantsEl.querySelector(`.mini-card[data-id="${payload.from}"]`);
   if (card) heartsFountain(card);
