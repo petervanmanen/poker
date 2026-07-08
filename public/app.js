@@ -640,9 +640,9 @@ function renderResults(people) {
   const values = voters.map((p) => revealedVotes[p.id]);
   const everyoneVoted = values.length > 0 && values.every((v) => v != null);
   const consensus = everyoneVoted && voters.length >= 2 && new Set(values).size === 1;
-  // Total disagreement: 3+ voters and everyone picked a different card.
+  // Total disagreement: every participant voted and all picked a different card.
   const allDifferent =
-    everyoneVoted && voters.length >= 3 && new Set(values).size === voters.length;
+    everyoneVoted && voters.length >= 2 && new Set(values).size === voters.length;
 
   resultsEl.innerHTML = `
     <div class="result-stat">
