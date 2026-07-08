@@ -130,6 +130,31 @@ button.ghost.active { border-color: var(--orange); color: var(--orange); }
 
 /* Item bar: facilitator start form / current item / waiting message */
 .item-bar { width: 100%; max-width: 640px; display: flex; justify-content: center; min-height: 44px; }
+.facilitator-start { display: flex; flex-direction: column; gap: 12px; width: 100%; align-items: center; }
+.deck-select { display: flex; align-items: center; gap: 6px; }
+.deck-select-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--muted);
+  margin-right: 4px;
+}
+.deck-select button {
+  padding: 6px 14px;
+  border: 2px solid var(--line);
+  background: #fff;
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--ink);
+  cursor: pointer;
+}
+.deck-select button:hover { border-color: var(--orange); }
+.deck-select button.active {
+  background: linear-gradient(135deg, var(--navy), var(--navy-2));
+  border-color: transparent;
+  color: #fff;
+}
 .item-form { display: flex; gap: 8px; width: 100%; }
 .item-form input {
   flex: 1;

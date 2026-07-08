@@ -20,7 +20,15 @@
  * values are never sent before reveal.
  */
 
-const DECK = ["0", "½", "1", "2", "3", "5", "8", "13", "20", "40", "100", "?", "☕"];
+// Card decks the facilitator can choose between (per session).
+const DECKS = {
+  fib: ["0", "½", "1", "2", "3", "5", "8", "13", "20", "40", "100", "?", "☕"],
+  tshirt: ["XS", "S", "M", "L", "XL", "XXL", "?", "☕"],
+};
+const DECK_LABELS = { fib: "Fibonacci", tshirt: "T-shirt" };
+function currentDeck() {
+  return DECKS[(session && session.deck) || "fib"];
+}
 const LOGO = "ritense-logo.svg";
 const SESSION_TIMEOUT_MS = 60 * 60 * 1000; // 60 min without a vote ends the session
 
@@ -131,6 +139,7 @@ function join(name, room) {
     .on("presence", { event: "sync" }, render)
     .on("broadcast", { event: "session-state" }, onSessionState)
     .on("broadcast", { event: "state" }, onState)
+    .on("broadcast", { event: "deck-set" }, onDeckSet)
     .on("broadcast", { event: "item-start" }, onItemStart)
     .on("broadcast", { event: "reveal" }, onReveal)
     .on("broadcast", { event: "reset" }, onReset)
@@ -184,6 +193,7 @@ function newSession(facilitatorId) {
   return {
     id: crypto.randomUUID(),
     facilitatorId,
+    deck: "fib",
     item: null,
     history: [],
     lastVoteAt: Date.now(),
@@ -235,6 +245,13 @@ function onSessionState({ payload }) {
     }
   }
   // Same id: ongoing changes arrive via their own events; ignore duplicates.
+}
+
+// ---- Deck selection ----
+function onDeckSet({ payload }) {
+  if (!session || !payload || !DECKS[payload.deck]) return;
+  session.deck = payload.deck;
+  render();
 }
 
 // ---- Item / round events ----
@@ -305,6 +322,11 @@ function startItem(title) {
   title = cleanText(title);
   if (!title) return;
   send("item-start", { title });
+}
+function chooseDeck(deck) {
+  if (!isFacilitator() || !DECKS[deck]) return;
+  if (session && session.deck === deck) return;
+  send("deck-set", { deck });
 }
 function doReveal() {
   if (isFacilitator()) send("reveal");
@@ -383,6 +405,13 @@ function render() {
   renderControls(people);
   renderDeck(spec);
   renderHistory();
+
+  // Keep the deck selector's active button in sync (its container isn't
+  // rebuilt on a deck change, to preserve the item input being typed).
+  const activeDeck = (session && session.deck) || "fib";
+  document.querySelectorAll(".deck-select button[data-deck]").forEach((b) => {
+    b.classList.toggle("active", b.dataset.deck === activeDeck);
+  });
 }
 
 function facilitatorName(people) {
@@ -409,6 +438,20 @@ function renderItemBar(people) {
   }
   if (phase === "noitem") {
     if (fac) {
+      const wrap = document.createElement("div");
+      wrap.className = "facilitator-start";
+      const deckSel = document.createElement("div");
+      deckSel.className = "deck-select";
+      deckSel.innerHTML =
+        `<span class="deck-select-label">Cards</span>` +
+        Object.keys(DECKS)
+          .map((d) => `<button type="button" data-deck="${d}">${DECK_LABELS[d]}</button>`)
+          .join("");
+      deckSel.addEventListener("click", (e) => {
+        const b = e.target.closest("button[data-deck]");
+        if (b) chooseDeck(b.dataset.deck);
+      });
+
       const form = document.createElement("form");
       form.className = "item-form";
       form.innerHTML = `
@@ -419,7 +462,10 @@ function renderItemBar(people) {
         e.preventDefault();
         startItem(document.getElementById("item-input").value);
       });
-      itemBarEl.appendChild(form);
+
+      wrap.appendChild(deckSel);
+      wrap.appendChild(form);
+      itemBarEl.appendChild(wrap);
     } else {
       itemBarEl.innerHTML = `<span class="waiting">Waiting for <strong>${escapeHtml(
         cleanText(facilitatorName(people))
@@ -555,7 +601,7 @@ function modeOfVotes() {
   for (const v of votes) counts[v] = (counts[v] || 0) + 1;
   let best = votes[0];
   let bestN = 0;
-  for (const v of DECK) {
+  for (const v of currentDeck()) {
     if (counts[v] && counts[v] > bestN) {
       best = v;
       bestN = counts[v];
@@ -614,7 +660,7 @@ function renderDeck(spec) {
   deckEl.innerHTML = "";
   if (!show) return;
 
-  for (const value of DECK) {
+  for (const value of currentDeck()) {
     const btn = document.createElement("button");
     btn.className = "card";
     btn.textContent = value;
