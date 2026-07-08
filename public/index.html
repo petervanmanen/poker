@@ -43,21 +43,29 @@
       </div>
     </header>
 
-    <main class="table-area">
-      <div id="participants" class="participants"></div>
+    <div class="layout">
+      <main class="table-area">
+        <div id="item-bar" class="item-bar"></div>
 
-      <div class="center-controls">
-        <div id="status" class="status"></div>
-        <button id="reveal-btn" class="primary">Reveal cards</button>
-        <button id="reset-btn" class="secondary hidden">New round</button>
-        <div id="results" class="results hidden"></div>
-      </div>
-    </main>
+        <div id="participants" class="participants"></div>
 
-    <footer class="deck-area">
-      <p class="deck-hint">Pick your card</p>
-      <div id="deck" class="deck"></div>
-    </footer>
+        <div class="center-controls">
+          <div id="status" class="status"></div>
+          <div id="controls" class="controls"></div>
+          <div id="results" class="results hidden"></div>
+        </div>
+
+        <div class="deck-area">
+          <p id="deck-hint" class="deck-hint">Pick your card</p>
+          <div id="deck" class="deck"></div>
+        </div>
+      </main>
+
+      <aside id="history" class="history-sidebar">
+        <h2 class="history-heading">This session</h2>
+        <div id="history-list" class="history-list"></div>
+      </aside>
+    </div>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>

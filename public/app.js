@@ -1,24 +1,27 @@
 /*
- * Serverless planning poker over Supabase Realtime.
+ * Serverless planning poker over Supabase Realtime — now with facilitated
+ * SESSIONS (Option B: no database, peer-held state synced over Realtime).
  *
- * Presence is used ONLY for identity (who is in the room + their name), because
- * presence *joins/leaves* propagate reliably but presence *updates* (re-track)
- * do not. All mutable per-participant state — hasVoted, spectator — travels over
- * Broadcast, which is reliable.
+ * Identity: a stable per-browser id in localStorage (so a refresh/return keeps
+ * you as the same participant — and keeps the facilitator the facilitator).
  *
- * Broadcast events:
- *   state         { id, hasVoted, spectator }  a participant's mutable state
- *   reveal                                      flip; each voter then emits value
- *   value         { id, value }                 actual pick, only after reveal
- *   reset                                        clear the round
- *   sync-request  { from }                       newcomer asks peers to announce
- *   sync-state    { revealed }                   peers tell newcomer a round is open
+ * Session state (held by the connected clients, synced via broadcast):
+ *   session = {
+ *     id,             // uuid of this session
+ *     facilitatorId,  // stable id of the facilitator (never transfers)
+ *     item,           // null | { title, phase: 'voting' | 'revealed' }
+ *     history,        // [ { title, result } ] newest first
+ *     lastVoteAt,     // ms epoch of the last vote cast (drives the 60-min end)
+ *   }
  *
- * Vote values are never sent before reveal, so cards stay genuinely hidden.
+ * Presence carries identity only { id, name }. Per-user mutable flags
+ * (hasVoted, spectator) and actual vote values travel over Broadcast — vote
+ * values are never sent before reveal.
  */
 
 const DECK = ["0", "½", "1", "2", "3", "5", "8", "13", "20", "40", "100", "?", "☕"];
 const LOGO = "ritense-logo.svg";
+const SESSION_TIMEOUT_MS = 60 * 60 * 1000; // 60 min without a vote ends the session
 
 // ---- Elements ----
 const loginEl = document.getElementById("login");
@@ -29,12 +32,14 @@ const roomInput = document.getElementById("room-input");
 const configWarning = document.getElementById("config-warning");
 
 const roomNameEl = document.getElementById("room-name");
+const itemBarEl = document.getElementById("item-bar");
 const participantsEl = document.getElementById("participants");
 const deckEl = document.getElementById("deck");
+const deckAreaEl = deckEl.parentElement;
 const statusEl = document.getElementById("status");
+const controlsEl = document.getElementById("controls");
 const resultsEl = document.getElementById("results");
-const revealBtn = document.getElementById("reveal-btn");
-const resetBtn = document.getElementById("reset-btn");
+const historyListEl = document.getElementById("history-list");
 const spectatorBtn = document.getElementById("spectator-btn");
 const leaveBtn = document.getElementById("leave-btn");
 
@@ -51,14 +56,30 @@ const client = configured
 
 // ---- Local state ----
 let channel = null;
-let myId = null;
+let myId = null; // stable per-browser id
 let myName = "";
-let myVote = null; // my locally-held card value (never broadcast until reveal)
-let revealed = false;
+let myVote = null; // locally-held card value (never broadcast until reveal)
+let session = null; // shared session state (see header)
 let states = {}; // id -> { hasVoted, spectator }
-let revealedVotes = {}; // id -> value, populated only after reveal
-let confettiShown = false; // fire the consensus easter egg once per round
+let revealedVotes = {}; // id -> value, only after reveal
+let confettiShown = false;
+let timeoutTimer = null;
 
+function stableClientId() {
+  let id = localStorage.getItem("pp_client_id");
+  if (!id) {
+    id = crypto.randomUUID();
+    localStorage.setItem("pp_client_id", id);
+  }
+  return id;
+}
+
+function isFacilitator() {
+  return !!(session && session.facilitatorId === myId);
+}
+function itemPhase() {
+  return session && session.item ? session.item.phase : "noitem";
+}
 function mySpectator() {
   return !!(states[myId] && states[myId].spectator);
 }
@@ -93,13 +114,13 @@ function join(name, room) {
   url.searchParams.set("room", room);
   history.replaceState({}, "", url);
 
-  myId = crypto.randomUUID();
+  myId = stableClientId();
   myName = name;
   myVote = null;
-  revealed = false;
-  confettiShown = false;
+  session = null;
   states = { [myId]: { hasVoted: false, spectator: false } };
   revealedVotes = {};
+  confettiShown = false;
 
   channel = client.channel(`room:${room}`, {
     config: { broadcast: { self: true }, presence: { key: myId } },
@@ -107,30 +128,47 @@ function join(name, room) {
 
   channel
     .on("presence", { event: "sync" }, render)
+    .on("broadcast", { event: "session-state" }, onSessionState)
     .on("broadcast", { event: "state" }, onState)
+    .on("broadcast", { event: "item-start" }, onItemStart)
     .on("broadcast", { event: "reveal" }, onReveal)
-    .on("broadcast", { event: "value" }, onValue)
     .on("broadcast", { event: "reset" }, onReset)
+    .on("broadcast", { event: "item-register" }, onItemRegister)
+    .on("broadcast", { event: "value" }, onValue)
     .on("broadcast", { event: "sync-request" }, onSyncRequest)
-    .on("broadcast", { event: "sync-state" }, onSyncState)
     .on("broadcast", { event: "celebrate" }, fireCelebration)
     .on("broadcast", { event: "hearts" }, onHearts)
     .subscribe(async (status) => {
       if (status !== "SUBSCRIBED") return;
-      await channel.track({ id: myId, name: myName }); // identity only
+      await channel.track({ id: myId, name: myName });
       broadcastMyState();
       send("sync-request", { from: myId });
+
+      // If no existing session announces itself shortly, elect a facilitator
+      // and start a fresh session.
+      setTimeout(() => {
+        if (!session) {
+          const fac = electFacilitatorId();
+          if (fac === myId) {
+            session = newSession(myId);
+            broadcastSession();
+          }
+          render();
+        }
+      }, 1500);
+
       roomNameEl.textContent = room;
       loginEl.classList.add("hidden");
       sessionEl.classList.remove("hidden");
+      if (timeoutTimer) clearInterval(timeoutTimer);
+      timeoutTimer = setInterval(checkTimeout, 20000);
       render();
     });
 }
 
 function send(event, payload = {}) {
-  channel.send({ type: "broadcast", event, payload });
+  if (channel) channel.send({ type: "broadcast", event, payload });
 }
-
 function broadcastMyState() {
   send("state", {
     id: myId,
@@ -138,16 +176,77 @@ function broadcastMyState() {
     spectator: mySpectator(),
   });
 }
+function broadcastSession() {
+  send("session-state", { session });
+}
+function newSession(facilitatorId) {
+  return {
+    id: crypto.randomUUID(),
+    facilitatorId,
+    item: null,
+    history: [],
+    lastVoteAt: Date.now(),
+  };
+}
 
-// ---- Broadcast handlers ----
-function onState({ payload }) {
-  if (!payload || !payload.id) return;
-  states[payload.id] = { hasVoted: !!payload.hasVoted, spectator: !!payload.spectator };
+// Lowest stable id among everyone currently present — deterministic so all
+// clients agree on who to elect when there is no session yet.
+function electFacilitatorId() {
+  const ids = participantList().map((p) => p.id);
+  if (!ids.includes(myId)) ids.push(myId);
+  ids.sort();
+  return ids[0];
+}
+
+// Clear the per-round voting state (not the session/history).
+function clearRound() {
+  myVote = null;
+  revealedVotes = {};
+  confettiShown = false;
+  for (const id of Object.keys(states)) states[id].hasVoted = false;
+}
+
+// ---- Session sync ----
+function onSyncRequest() {
+  if (session) broadcastSession();
+  broadcastMyState();
+  // Late joiner during a revealed round needs the actual values.
+  if (itemPhase() === "revealed" && !mySpectator() && myVote !== null) {
+    send("value", { id: myId, value: myVote });
+  }
+}
+
+function onSessionState({ payload }) {
+  const s = payload && payload.session;
+  if (!s) return;
+  if (!session) {
+    session = s;
+    render();
+    return;
+  }
+  if (s.id !== session.id) {
+    // Two sessions raced — keep the one with the smaller id; help the loser converge.
+    if (s.id < session.id) {
+      session = s;
+      render();
+    } else {
+      broadcastSession();
+    }
+  }
+  // Same id: ongoing changes arrive via their own events; ignore duplicates.
+}
+
+// ---- Item / round events ----
+function onItemStart({ payload }) {
+  if (!session || !payload) return;
+  session.item = { title: payload.title, phase: "voting" };
+  clearRound();
   render();
 }
 
 function onReveal() {
-  revealed = true;
+  if (!session || !session.item) return;
+  session.item.phase = "revealed";
   if (!mySpectator() && myVote !== null) {
     revealedVotes[myId] = myVote;
     send("value", { id: myId, value: myVote });
@@ -155,53 +254,82 @@ function onReveal() {
   render();
 }
 
-function onValue({ payload }) {
-  if (payload && payload.id) {
-    revealedVotes[payload.id] = payload.value;
-    if (revealed) render();
-  }
-}
-
 function onReset() {
-  revealed = false;
-  confettiShown = false;
-  myVote = null;
-  revealedVotes = {};
-  // Clear everyone's voted flag — a reset starts a fresh round for all.
-  for (const id of Object.keys(states)) states[id].hasVoted = false;
+  if (!session || !session.item) return;
+  session.item.phase = "voting";
+  clearRound();
   render();
 }
 
-function onSyncRequest() {
-  // Announce my current state so newcomers see who has voted / who is spectating.
+function onItemRegister({ payload }) {
+  if (!session || !session.item || !payload) return;
+  session.history.unshift({ title: session.item.title, result: payload.result });
+  session.item = null;
+  clearRound();
+  render();
+}
+
+function onValue({ payload }) {
+  if (payload && payload.id) {
+    revealedVotes[payload.id] = payload.value;
+    if (itemPhase() === "revealed") render();
+  }
+}
+
+function onState({ payload }) {
+  if (!payload || !payload.id) return;
+  states[payload.id] = { hasVoted: !!payload.hasVoted, spectator: !!payload.spectator };
+  if (payload.hasVoted && session) session.lastVoteAt = Date.now(); // a vote is activity
+  render();
+}
+
+// ---- Timeout ----
+function checkTimeout() {
+  if (!session) return;
+  if (Date.now() - session.lastVoteAt > SESSION_TIMEOUT_MS) {
+    // Only the elected (lowest-id present) client starts the new session, to
+    // avoid several clients creating competing ones.
+    if (electFacilitatorId() === myId) {
+      session = newSession(myId);
+      clearRound();
+      broadcastSession();
+      render();
+    }
+  }
+}
+
+// ---- Facilitator actions ----
+function startItem(title) {
+  if (!isFacilitator()) return;
+  title = cleanText(title);
+  if (!title) return;
+  send("item-start", { title });
+}
+function doReveal() {
+  if (isFacilitator()) send("reveal");
+}
+function doRevote() {
+  if (isFacilitator()) send("reset");
+}
+function doRegister(result) {
+  if (!isFacilitator()) return;
+  result = cleanText(result) || modeOfVotes();
+  if (!result) return;
+  send("item-register", { result });
+}
+
+// ---- Voting ----
+function vote(value) {
+  if (itemPhase() !== "voting" || mySpectator()) return;
+  myVote = myVote === value ? null : value;
+  states[myId] = states[myId] || { hasVoted: false, spectator: false };
+  states[myId].hasVoted = myVote !== null;
+  if (session) session.lastVoteAt = Date.now();
   broadcastMyState();
-  if (revealed) {
-    send("sync-state", { revealed: true });
-    if (!mySpectator() && myVote !== null) send("value", { id: myId, value: myVote });
-  }
+  render();
 }
 
-function onSyncState({ payload }) {
-  if (payload && payload.revealed) {
-    revealed = true;
-    render();
-  }
-}
-
-// Someone sent hearts. Only the intended receiver sees them — a fountain rising
-// from the SENDER's card as it appears on the receiver's screen.
-function onHearts({ payload }) {
-  if (!payload || !payload.from) return;
-  if (payload.to !== myId) return; // private: receiver only
-  const card = participantsEl.querySelector(
-    `.mini-card[data-id="${payload.from}"]`
-  );
-  if (card) heartsFountain(card);
-}
-
-// ---- Actions ----
-revealBtn.addEventListener("click", () => send("reveal"));
-resetBtn.addEventListener("click", () => send("reset"));
+// ---- Actions (buttons wired once) ----
 spectatorBtn.addEventListener("click", () => {
   const now = !mySpectator();
   states[myId] = states[myId] || { hasVoted: false, spectator: false };
@@ -215,12 +343,12 @@ spectatorBtn.addEventListener("click", () => {
 });
 leaveBtn.addEventListener("click", () => {
   localStorage.removeItem("pp_room");
+  if (timeoutTimer) clearInterval(timeoutTimer);
   if (channel) client.removeChannel(channel);
   location.href = location.pathname;
 });
 
-// Click another participant's card to shower them with hearts. Delegated on the
-// container (which persists across re-renders).
+// Click another participant's card to (privately) shower them with hearts.
 participantsEl.addEventListener("click", (e) => {
   const card = e.target.closest(".mini-card[data-id]");
   if (!card || !channel) return;
@@ -229,19 +357,9 @@ participantsEl.addEventListener("click", (e) => {
   send("hearts", { from: myId, to: id });
 });
 
-function vote(value) {
-  if (revealed || mySpectator()) return;
-  myVote = myVote === value ? null : value;
-  states[myId] = states[myId] || { hasVoted: false, spectator: false };
-  states[myId].hasVoted = myVote !== null;
-  broadcastMyState();
-  render();
-}
-
 // ---- Render ----
 function participantList() {
   const state = channel ? channel.presenceState() : {};
-  // Presence gives identity (id, name); mutable flags come from `states`.
   return Object.values(state)
     .map((metas) => metas[0])
     .filter(Boolean)
@@ -259,9 +377,58 @@ function render() {
   spectatorBtn.classList.toggle("active", spec);
   spectatorBtn.textContent = spec ? "🎴 Join voting" : "👀 Spectate";
 
+  renderItemBar(people);
   renderParticipants(people);
-  renderDeck(spec);
   renderControls(people);
+  renderDeck(spec);
+  renderHistory();
+}
+
+function facilitatorName(people) {
+  if (!session) return "the facilitator";
+  const f = people.find((p) => p.id === session.facilitatorId);
+  return f ? f.name : "the facilitator";
+}
+
+function renderItemBar(people) {
+  const phase = itemPhase();
+  const fac = isFacilitator();
+  let key;
+  if (!session) key = "connecting";
+  else if (phase === "noitem") key = "noitem|" + fac + "|" + cleanText(facilitatorName(people));
+  else key = "item|" + cleanText(session.item.title);
+
+  if (itemBarEl.dataset.key === key) return; // don't clobber a form being typed in
+  itemBarEl.dataset.key = key;
+  itemBarEl.innerHTML = "";
+
+  if (!session) {
+    itemBarEl.innerHTML = `<span class="waiting">Connecting…</span>`;
+    return;
+  }
+  if (phase === "noitem") {
+    if (fac) {
+      const form = document.createElement("form");
+      form.className = "item-form";
+      form.innerHTML = `
+        <input id="item-input" type="text" maxlength="120"
+               placeholder="What are we estimating? (e.g. RIT-123 Login page)" />
+        <button type="submit" class="primary">Put to vote</button>`;
+      form.addEventListener("submit", (e) => {
+        e.preventDefault();
+        startItem(document.getElementById("item-input").value);
+      });
+      itemBarEl.appendChild(form);
+    } else {
+      itemBarEl.innerHTML = `<span class="waiting">Waiting for <strong>${escapeHtml(
+        cleanText(facilitatorName(people))
+      )}</strong> to put an item to vote…</span>`;
+    }
+  } else {
+    itemBarEl.innerHTML = `<div class="item-title"><span class="item-label">Estimating</span>${escapeHtml(
+      cleanText(session.item.title)
+    )}</div>`;
+  }
 }
 
 function renderParticipants(people) {
@@ -276,15 +443,44 @@ function renderParticipants(people) {
     el.className = "participant";
     el.innerHTML = `
       <div class="mini-card empty" style="font-size:22px">👀</div>
-      <span class="name">${escapeHtml(p.name)}${p.id === myId ? " (you)" : ""}</span>
+      <span class="name">${nameLabel(p)}</span>
       <span class="badge">spectating</span>`;
     tagSendable(el, p.id);
     participantsEl.appendChild(el);
   }
 }
 
-// Mark a participant's card with its owner id; other people's cards are
-// clickable to send them hearts.
+function participantNode(p) {
+  const el = document.createElement("div");
+  el.className = "participant";
+
+  let cardHtml;
+  if (itemPhase() === "revealed") {
+    const v = revealedVotes[p.id];
+    cardHtml = `<div class="mini-card revealed">${v != null ? escapeHtml(v) : "–"}</div>`;
+  } else if (p.hasVoted) {
+    cardHtml = `<div class="mini-card voted"><img class="back-logo" src="${LOGO}" alt="ritense" /></div>`;
+  } else {
+    cardHtml = `<div class="mini-card empty"></div>`;
+  }
+
+  el.innerHTML = `
+    ${cardHtml}
+    <span class="name">${nameLabel(p)}</span>`;
+  tagSendable(el, p.id);
+  return el;
+}
+
+// Display name: stripped of any user emoji, then decorated with a crown for the
+// facilitator and a dog for Geertje/Anneke.
+function nameLabel(p) {
+  let out = escapeHtml(cleanText(p.name));
+  if (session && session.facilitatorId === p.id) out += " 👑";
+  if (/geertje|anneke/i.test(p.name || "")) out += " 🐕";
+  if (p.id === myId) out += " (you)";
+  return out;
+}
+
 function tagSendable(el, id) {
   const card = el.querySelector(".mini-card");
   if (!card) return;
@@ -295,60 +491,76 @@ function tagSendable(el, id) {
   }
 }
 
-function participantNode(p) {
-  const el = document.createElement("div");
-  el.className = "participant";
-
-  let cardHtml;
-  if (revealed) {
-    const v = revealedVotes[p.id];
-    cardHtml = `<div class="mini-card revealed">${v != null ? escapeHtml(v) : "–"}</div>`;
-  } else if (p.hasVoted) {
-    // Face-down card carries the Ritense logo.
-    cardHtml = `<div class="mini-card voted"><img class="back-logo" src="${LOGO}" alt="ritense" /></div>`;
-  } else {
-    cardHtml = `<div class="mini-card empty"></div>`;
-  }
-
-  el.innerHTML = `
-    ${cardHtml}
-    <span class="name">${escapeHtml(p.name)}${p.id === myId ? " (you)" : ""}</span>`;
-  tagSendable(el, p.id);
-  return el;
-}
-
-function renderDeck(spec) {
-  deckEl.innerHTML = "";
-  deckEl.classList.toggle("hidden", spec);
-  if (spec) return;
-
-  for (const value of DECK) {
-    const btn = document.createElement("button");
-    btn.className = "card";
-    btn.textContent = value;
-    if (myVote === value && !revealed) btn.classList.add("selected");
-    btn.disabled = revealed;
-    btn.addEventListener("click", () => vote(value));
-    deckEl.appendChild(btn);
-  }
-}
-
 function renderControls(people) {
+  const phase = itemPhase();
+  const fac = isFacilitator();
   const voters = people.filter((p) => !p.spectator);
   const votedCount = voters.filter((p) => p.hasVoted).length;
 
-  if (revealed) {
-    statusEl.textContent = "Cards revealed";
-    revealBtn.classList.add("hidden");
-    resetBtn.classList.remove("hidden");
-    renderResults(people);
-  } else {
-    statusEl.textContent = `${votedCount} / ${voters.length} voted`;
-    revealBtn.classList.remove("hidden");
-    revealBtn.disabled = votedCount === 0;
-    resetBtn.classList.add("hidden");
-    resultsEl.classList.add("hidden");
+  if (phase === "revealed") statusEl.textContent = "Cards revealed";
+  else if (phase === "voting") statusEl.textContent = `${votedCount} / ${voters.length} voted`;
+  else statusEl.textContent = "";
+
+  const key = phase + "|" + fac;
+  if (controlsEl.dataset.key !== key) {
+    controlsEl.dataset.key = key;
+    controlsEl.innerHTML = "";
+
+    if (fac && phase === "voting") {
+      const b = document.createElement("button");
+      b.className = "primary";
+      b.id = "reveal-btn";
+      b.textContent = "Reveal cards";
+      b.addEventListener("click", doReveal);
+      controlsEl.appendChild(b);
+    } else if (fac && phase === "revealed") {
+      const form = document.createElement("form");
+      form.className = "register-form";
+      form.innerHTML = `
+        <input id="result-input" type="text" maxlength="60" placeholder="Final result" />
+        <button type="submit" class="primary">Register result</button>
+        <button type="button" id="revote-btn" class="secondary">Re-vote</button>`;
+      form.addEventListener("submit", (e) => {
+        e.preventDefault();
+        doRegister(document.getElementById("result-input").value);
+      });
+      form.querySelector("#revote-btn").addEventListener("click", doRevote);
+      form.querySelector("#result-input").addEventListener("input", (e) => {
+        e.target.dataset.dirty = "1";
+      });
+      controlsEl.appendChild(form);
+    }
   }
+
+  // Live updates that must not rebuild the (possibly focused) form:
+  if (fac && phase === "voting") {
+    const rb = document.getElementById("reveal-btn");
+    if (rb) rb.disabled = votedCount === 0;
+  }
+  if (fac && phase === "revealed") {
+    const inp = document.getElementById("result-input");
+    if (inp && !inp.dataset.dirty) inp.value = modeOfVotes();
+  }
+
+  if (phase === "revealed") renderResults(people);
+  else resultsEl.classList.add("hidden");
+}
+
+// Most-chosen revealed card (mode). Ties resolved by deck order for determinism.
+function modeOfVotes() {
+  const votes = Object.values(revealedVotes);
+  if (!votes.length) return "";
+  const counts = {};
+  for (const v of votes) counts[v] = (counts[v] || 0) + 1;
+  let best = votes[0];
+  let bestN = 0;
+  for (const v of DECK) {
+    if (counts[v] && counts[v] > bestN) {
+      best = v;
+      bestN = counts[v];
+    }
+  }
+  return best;
 }
 
 function renderResults(people) {
@@ -373,9 +585,6 @@ function renderResults(people) {
     .map(([v, c]) => `${escapeHtml(v)}×${c}`)
     .join("  ");
 
-  // Strict consensus: at least two voters, EVERY non-spectator has voted, and
-  // all their revealed cards are identical (and every value has actually
-  // arrived over the wire yet).
   const voters = (people || []).filter((p) => !p.spectator);
   const values = voters.map((p) => revealedVotes[p.id]);
   const allIn = voters.length >= 2 && values.every((v) => v != null);
@@ -392,24 +601,52 @@ function renderResults(people) {
     </div>
     ${consensus ? '<div class="consensus-badge">🎉 Consensus!</div>' : ""}`;
 
-  // Easter egg: everyone agreed. Fire locally AND tell every peer to fire, so
-  // it isn't left to each client's own (timing-sensitive) detection.
   if (consensus && !confettiShown) {
     fireCelebration();
     send("celebrate");
   }
 }
 
-// Celebrate once per round: confetti + a little "tada". Guarded so repeated
-// triggers (local detection + the broadcast echo) only fire it a single time.
+function renderDeck(spec) {
+  const show = itemPhase() === "voting" && !spec;
+  deckAreaEl.classList.toggle("hidden", !show);
+  deckEl.innerHTML = "";
+  if (!show) return;
+
+  for (const value of DECK) {
+    const btn = document.createElement("button");
+    btn.className = "card";
+    btn.textContent = value;
+    if (myVote === value) btn.classList.add("selected");
+    btn.addEventListener("click", () => vote(value));
+    deckEl.appendChild(btn);
+  }
+}
+
+function renderHistory() {
+  historyListEl.innerHTML = "";
+  const hist = session ? session.history : [];
+  if (!hist.length) {
+    historyListEl.innerHTML = `<p class="history-empty">No items registered yet.</p>`;
+    return;
+  }
+  for (const h of hist) {
+    const card = document.createElement("div");
+    card.className = "history-card";
+    card.innerHTML = `
+      <div class="history-title">${escapeHtml(cleanText(h.title))}</div>
+      <div class="history-result">${escapeHtml(cleanText(h.result))}</div>`;
+    historyListEl.appendChild(card);
+  }
+}
+
+// ---- Celebration (confetti + tada) ----
 function fireCelebration() {
   if (confettiShown) return;
   confettiShown = true;
   burstConfetti();
   playTada();
 }
-
-// Ritense-colored confetti burst.
 function burstConfetti() {
   if (typeof confetti !== "function") return;
   const colors = ["#003263", "#ed6d3c", "#0a4d8f", "#ffffff"];
@@ -422,7 +659,6 @@ function burstConfetti() {
   })();
 }
 
-// ---- Audio: a synthesized "ta-da" fanfare (no external file needed) ----
 let audioCtx = null;
 function ensureAudio() {
   if (!audioCtx) {
@@ -433,13 +669,43 @@ function ensureAudio() {
   if (audioCtx.state === "suspended") audioCtx.resume();
   return audioCtx;
 }
-// Browsers only allow audio after a user gesture — unlock the context on the
-// first interaction so the tada can play later (even when triggered by a peer).
 ["click", "keydown", "touchstart"].forEach((ev) =>
   window.addEventListener(ev, ensureAudio, { passive: true })
 );
+function playTada() {
+  const ctx = ensureAudio();
+  if (!ctx) return;
+  const now = ctx.currentTime;
+  const notes = [
+    { f: 523.25, t: 0.0, d: 0.14 },
+    { f: 523.25, t: 0.16, d: 0.55 },
+    { f: 659.25, t: 0.16, d: 0.55 },
+    { f: 783.99, t: 0.16, d: 0.55 },
+    { f: 1046.5, t: 0.16, d: 0.55 },
+  ];
+  for (const n of notes) {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "triangle";
+    osc.frequency.value = n.f;
+    const start = now + n.t;
+    gain.gain.setValueAtTime(0.0001, start);
+    gain.gain.exponentialRampToValueAtTime(0.22, start + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, start + n.d);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(start);
+    osc.stop(start + n.d + 0.05);
+  }
+}
 
-// ---- Hearts fountain ----
+// ---- Hearts (private to the receiver) ----
+function onHearts({ payload }) {
+  if (!payload || !payload.from) return;
+  if (payload.to !== myId) return;
+  const card = participantsEl.querySelector(`.mini-card[data-id="${payload.from}"]`);
+  if (card) heartsFountain(card);
+}
 function heartsLayer() {
   let layer = document.getElementById("hearts-layer");
   if (!layer) {
@@ -449,16 +715,13 @@ function heartsLayer() {
   }
   return layer;
 }
-
 function heartsFountain(el) {
   const rect = el.getBoundingClientRect();
   const originX = rect.left + rect.width / 2;
   const originY = rect.top + rect.height / 2;
   const layer = heartsLayer();
   const emojis = ["❤️", "💖", "💕", "💗", "🧡"];
-  const count = 16;
-
-  for (let i = 0; i < count; i++) {
+  for (let i = 0; i < 16; i++) {
     const heart = document.createElement("div");
     heart.className = "heart";
     heart.textContent = emojis[i % emojis.length];
@@ -466,9 +729,8 @@ function heartsFountain(el) {
     heart.style.top = originY + "px";
     heart.style.fontSize = 16 + Math.random() * 18 + "px";
     layer.appendChild(heart);
-
-    const dx = (Math.random() - 0.5) * 170; // horizontal spread
-    const rise = 170 + Math.random() * 140; // how high it floats
+    const dx = (Math.random() - 0.5) * 170;
+    const rise = 170 + Math.random() * 140;
     const anim = heart.animate(
       [
         { transform: "translate(-50%, -50%) scale(0.4)", opacity: 0 },
@@ -493,32 +755,13 @@ function heartsFountain(el) {
   }
 }
 
-function playTada() {
-  const ctx = ensureAudio();
-  if (!ctx) return;
-  const now = ctx.currentTime;
-  // A short "ta" pickup, then a bright major chord "da".
-  const notes = [
-    { f: 523.25, t: 0.0, d: 0.14 }, // C5
-    { f: 523.25, t: 0.16, d: 0.55 }, // C5
-    { f: 659.25, t: 0.16, d: 0.55 }, // E5
-    { f: 783.99, t: 0.16, d: 0.55 }, // G5
-    { f: 1046.5, t: 0.16, d: 0.55 }, // C6
-  ];
-  for (const n of notes) {
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = "triangle";
-    osc.frequency.value = n.f;
-    const start = now + n.t;
-    gain.gain.setValueAtTime(0.0001, start);
-    gain.gain.exponentialRampToValueAtTime(0.22, start + 0.02);
-    gain.gain.exponentialRampToValueAtTime(0.0001, start + n.d);
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start(start);
-    osc.stop(start + n.d + 0.05);
-  }
+// ---- Helpers ----
+// Strip any user-entered emoji (names / item / result text are never allowed to
+// show emoji), then collapse whitespace.
+const EMOJI_RE =
+  /(\p{Extended_Pictographic}|\uFE0F|\u200D|[\u{1F1E6}-\u{1F1FF}])/gu;
+function cleanText(s) {
+  return String(s || "").replace(EMOJI_RE, "").replace(/\s+/g, " ").trim();
 }
 
 function escapeHtml(s) {
